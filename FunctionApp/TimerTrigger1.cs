@@ -26,7 +26,7 @@ public class CreateAlertsTimer
 
     [Function("CreateAlertsTimer2")]
     public async Task Run(
-        [TimerTrigger("0 */30 * * * *")] TimerInfo myTimer)
+        [TimerTrigger("0 0 3,15 * * *")] TimerInfo myTimer)
     {
         _logger.LogInformation("Timer started at {time}", DateTime.Now);
 
