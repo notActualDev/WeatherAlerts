@@ -24,7 +24,7 @@ public class CreateAlertsTimer
         _httpClient = httpClientFactory.CreateClient();
     }
 
-    [Function("CreateAlertsTimer2")]
+    [Function("CreateAlertsTimer3")]
     public async Task Run(
         [TimerTrigger("0 0 3,15 * * *")] TimerInfo myTimer)
     {
