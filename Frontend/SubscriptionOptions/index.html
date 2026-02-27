@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Ustawienia subskrypcji</title>
+
+<style>
+body { font-family: system-ui, sans-serif; max-width:720px; margin:20px auto; padding:0 12px; }
+input, button { font-size:16px; padding:6px; }
+#selectedCities li { margin:6px 0; }
+#selectedCities button { margin-left:8px; }
+#searchResults { list-style:none; margin:0; padding:0; }
+#searchResults li { padding:12px; border-bottom:1px solid #ddd; cursor:pointer; background:#fff; }
+#searchResults li:active { background:#eee; }
+#app { display:none; }
+</style>
+</head>
+<body>
+
+<div id="loading">
+<h2>Sprawdzam link…</h2>
+</div>
+
+<div id="app">
+
+<h1>Ustawienia subskrypcji</h1>
+
+<h2>Wyszukaj miasto</h2>
+
+<input type="text" id="citySearch" placeholder="Wpisz miasto..." />
+
+<div id="cityLoader" style="display:none;margin:6px 0;">Szukam…</div>
+
+<div id="searchResultsContainer" style="display:none;">
+<h3>Propozycje</h3>
+<ul id="searchResults"></ul>
+</div>
+
+<h3>Twoje miasta</h3>
+<ul id="selectedCities"></ul>
+
+<div style="margin-top:12px;">
+<button id="saveBtn">Zatwierdź</button>
+</div>
+
+<p id="status"></p>
+
+</div>
+
+<script>
+
+const params = new URLSearchParams(window.location.search);
+const token = params.get("token")?.trim();
+if (!token) showInvalid("Link jest nieprawidłowy.");
+
+function showInvalid(message){
+  document.body.innerHTML=`<h2>Nieprawidłowy link</h2><p>${message}</p>`;
+}
+
+/* =========================
+   WALIDACJA TOKENU
+========================= */
+
+async function validateToken() {
+  try {
+    const response = await fetch(
+      "https://weatheralerts-eefkdachhtdeechp.westeurope-01.azurewebsites.net/api/requestSubscriptionSettings",
+      {
+        method:"POST",
+        headers:{ "Content-Type":"application/json" },
+        body:JSON.stringify({ token })
+      }
+    );
+
+    if (!response.ok) throw new Error();
+
+    document.getElementById("loading").style.display="none";
+    document.getElementById("app").style.display="block";
+
+    await loadExistingCities();
+
+  } catch {
+    showInvalid("Link wygasł lub jest nieprawidłowy.");
+  }
+}
+
+/* =========================
+   MODEL DANYCH
+========================= */
+
+const selectedCities = [];
+const selectedCitiesList = document.getElementById("selectedCities");
+
+/*
+Każde miasto ma strukturę:
+
+{
+  pl: { name, country },
+  en: { name, country, countryCode }
+}
+*/
+
+function renderSelectedCities(){
+  selectedCitiesList.innerHTML="";
+
+  for(const city of selectedCities){
+
+    const li=document.createElement("li");
+    li.textContent=`${city.pl.name}, ${city.pl.country}`;
+
+    const btn=document.createElement("button");
+    btn.textContent="Usuń";
+    btn.onclick=()=>{
+      const i = selectedCities.findIndex(c =>
+        c.en.name === city.en.name &&
+        c.en.countryCode === city.en.countryCode
+      );
+      if(i!==-1){
+        selectedCities.splice(i,1);
+        renderSelectedCities();
+      }
+    };
+
+    li.appendChild(btn);
+    selectedCitiesList.appendChild(li);
+  }
+}
+
+/* =========================
+   ŁADOWANIE ISTNIEJĄCYCH MIAST
+   (Backend zwraca EN dane)
+========================= */
+
+async function loadExistingCities(){
+
+  const response = await fetch(
+    "https://weatheralerts-eefkdachhtdeechp.westeurope-01.azurewebsites.net/api/getUsersCities",
+    {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify({ token })
+    }
+  );
+
+  if(!response.ok) return;
+
+  /*
+    Backend zwraca:
+    [
+      { city, country, countryCode }
+    ]
+  */
+
+  const data = await response.json();
+
+  for(const item of data){
+
+    // pobieramy polską nazwę przez search API
+    const geo = await fetch(
+      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(item.city)}&count=1&language=pl&format=json`
+    );
+
+    const geoData = await geo.json();
+    const result = geoData.results?.[0];
+
+    if(!result) continue;
+
+    selectedCities.push({
+      pl:{
+        name: result.name,
+        country: result.country
+      },
+      en:{
+        name: item.city,
+        country: item.country,
+        countryCode: item.countryCode
+      }
+    });
+  }
+
+  renderSelectedCities();
+}
+
+/* =========================
+   WYSZUKIWANIE (PL + EN)
+========================= */
+
+const citySearch=document.getElementById("citySearch");
+const searchResults=document.getElementById("searchResults");
+const searchResultsContainer=document.getElementById("searchResultsContainer");
+const cityLoader=document.getElementById("cityLoader");
+
+let timeout=null;
+
+citySearch.addEventListener("input",()=>{
+  clearTimeout(timeout);
+
+  timeout=setTimeout(async()=>{
+    const query=citySearch.value.trim();
+
+    searchResults.innerHTML="";
+    searchResultsContainer.style.display="none";
+    cityLoader.style.display="none";
+
+    if(query.length<2) return;
+
+    cityLoader.style.display="block";
+
+    // pobieramy PL wersję
+    const plUrl=`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=5&language=pl&format=json`;
+
+    const plResponse=await fetch(plUrl);
+    const plData=await plResponse.json();
+
+    cityLoader.style.display="none";
+
+    if(!plData.results?.length) return;
+
+    searchResultsContainer.style.display="block";
+
+    for(const r of plData.results){
+
+      // unikamy duplikatów
+      if(selectedCities.some(c =>
+        c.en.name === r.name &&
+        c.en.countryCode === r.country_code
+      )) continue;
+
+      const li=document.createElement("li");
+      li.textContent=`${r.name}, ${r.country}`;
+
+      li.onclick=async()=>{
+
+        // pobieramy EN wersję
+        const enUrl=`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(r.name)}&count=1&language=en&format=json`;
+
+        const enResponse=await fetch(enUrl);
+        const enData=await enResponse.json();
+        const enResult=enData.results?.[0];
+
+        if(!enResult) return;
+
+        selectedCities.push({
+          pl:{
+            name:r.name,
+            country:r.country
+          },
+          en:{
+            name:enResult.name,
+            country:enResult.country,
+            countryCode:enResult.country_code
+          }
+        });
+
+        citySearch.value="";
+        searchResults.innerHTML="";
+        searchResultsContainer.style.display="none";
+
+        renderSelectedCities();
+      };
+
+      searchResults.appendChild(li);
+    }
+
+  },300);
+});
+
+/* =========================
+   ZAPIS DO BACKENDU (EN ONLY)
+========================= */
+
+document.getElementById("saveBtn").addEventListener("click",async()=>{
+
+  const payload={
+    token:token,
+    locations:selectedCities.map(c=>({
+      city:c.en.name,
+      country:c.en.country,
+      countryCode:c.en.countryCode
+    }))
+  };
+
+  const response=await fetch(
+    "https://weatheralerts-eefkdachhtdeechp.westeurope-01.azurewebsites.net/api/confirmSubscription",
+    {
+      method:"POST",
+      headers:{ "Content-Type":"application/json" },
+      body:JSON.stringify(payload)
+    }
+  );
+
+  if(response.ok)
+    document.body.innerHTML="<h2>Dziękujemy! Ustawienia zapisane.</h2>";
+  else
+    alert("Błąd zapisu");
+});
+
+validateToken();
+
+</script>
+</body>
+</html>
