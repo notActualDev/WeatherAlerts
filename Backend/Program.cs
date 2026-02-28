@@ -22,6 +22,44 @@ app.UseCors();
 app.MapGet("/", () => "ROOT OK");
 app.MapGet("/health", () => Results.Ok("OK"));
 app.MapGet("/api/ping", () => Results.Ok("pong"));
+app.MapGet("/sleepless", async (IConfiguration configuration, CancellationToken ct) =>
+{
+    var connectionString = configuration.GetConnectionString("Default");
+    if (string.IsNullOrWhiteSpace(connectionString))
+    {
+        return Results.Problem(
+            title: "Configuration error",
+            detail: "Missing connection string: Default",
+            statusCode: StatusCodes.Status500InternalServerError);
+    }
+
+    var startedAtUtc = DateTime.UtcNow;
+
+    try
+    {
+        await using var con = new Microsoft.Data.SqlClient.SqlConnection(connectionString);
+        await con.OpenAsync(ct);
+
+        await using var cmd = new Microsoft.Data.SqlClient.SqlCommand("SELECT 1;", con);
+        var dbPing = await cmd.ExecuteScalarAsync(ct);
+
+        var elapsedMs = (int)Math.Round((DateTime.UtcNow - startedAtUtc).TotalMilliseconds);
+        return Results.Ok(new
+        {
+            App = "awake",
+            Database = "awake",
+            SelectResult = dbPing,
+            ElapsedMs = elapsedMs
+        });
+    }
+    catch (Exception ex)
+    {
+        return Results.Problem(
+            title: "Sleepless check failed",
+            detail: ex.Message,
+            statusCode: StatusCodes.Status500InternalServerError);
+    }
+});
 app.MapGet("/api/debug/send-test-mail", async (IEmailService emailService, IConfiguration configuration, ILogger<Program> logger) =>
 {
     var debugEmail = configuration["DEBUG_EMAIL"];
