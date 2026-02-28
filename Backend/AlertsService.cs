@@ -769,6 +769,11 @@ WHERE u.IsSubscribed = 1
         List<AlertRow> alerts,
         IReadOnlyDictionary<int, CityToCheck> cityById)
     {
+        var todayLocal = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, Warsaw).Date;
+        var targetDate = todayLocal.AddDays(1);
+        var targetDay = GetPolishDayNameAscii(targetDate.DayOfWeek);
+        var targetDateText = targetDate.ToString("dd.MM.yyyy");
+
         var byCity = alerts
             .GroupBy(a => a.CityId)
             .OrderBy(g =>
@@ -785,7 +790,7 @@ WHERE u.IsSubscribed = 1
         {
             "Czesc,",
             "",
-            "Ponizej znajdziesz alerty pogodowe na jutro dla Twoich miast.",
+            $"Ponizej znajdziesz alerty pogodowe na jutro ({targetDay}, {targetDateText}) dla Twoich miast.",
             ""
         };
 
@@ -824,6 +829,21 @@ WHERE u.IsSubscribed = 1
         lines.Add("WeatherAlerts");
 
         return string.Join("\n", lines);
+    }
+
+    private static string GetPolishDayNameAscii(DayOfWeek dayOfWeek)
+    {
+        return dayOfWeek switch
+        {
+            DayOfWeek.Monday => "poniedzialek",
+            DayOfWeek.Tuesday => "wtorek",
+            DayOfWeek.Wednesday => "sroda",
+            DayOfWeek.Thursday => "czwartek",
+            DayOfWeek.Friday => "piatek",
+            DayOfWeek.Saturday => "sobota",
+            DayOfWeek.Sunday => "niedziela",
+            _ => dayOfWeek.ToString()
+        };
     }
 
     private static string GetAlertTypeLabel(int alertTypeId)
