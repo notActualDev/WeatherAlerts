@@ -152,7 +152,11 @@ WHERE c.ID IN ({string.Join(", ", paramNames)});";
                 data,
                 AlertType.WindshieldScraping,
                 i => IsTrue(data.Temperature, i, t => t <= 0) &&
-                     IsTrue(data.Humidity, i, h => h >= 85),
+                     i >= 0 &&
+                     i < data.DewPoint.Length &&
+                     data.Temperature[i].HasValue &&
+                     data.DewPoint[i].HasValue &&
+                     (data.Temperature[i]!.Value - data.DewPoint[i]!.Value) <= 2.0,
                 nowUtc,
                 70,
                 nextDayStartUtc,
@@ -198,28 +202,30 @@ WHERE c.ID IN ({string.Join(", ", paramNames)});";
                 nextDayStartUtc,
                 nextDayEndUtc));
 
-            alerts.AddRange(BuildAlertRanges(
-                data,
-                AlertType.PoorAirQuality,
-                i => IsTrue(data.Visibility, i, v => v < 3000) &&
-                     IsTrue(data.WindSpeed, i, w => w < 12.0) &&
-                     !IsTrue(data.Precip, i, p => p > 0.1),
-                nowUtc,
-                55,
-                nextDayStartUtc,
-                nextDayEndUtc));
+            // Disabled intentionally: kept as historical logic, not used currently.
+            // alerts.AddRange(BuildAlertRanges(
+            //     data,
+            //     AlertType.PoorAirQuality,
+            //     i => IsTrue(data.Visibility, i, v => v < 3000) &&
+            //          IsTrue(data.WindSpeed, i, w => w < 12.0) &&
+            //          !IsTrue(data.Precip, i, p => p > 0.1),
+            //     nowUtc,
+            //     55,
+            //     nextDayStartUtc,
+            //     nextDayEndUtc));
 
-            alerts.AddRange(BuildAlertRanges(
-                data,
-                AlertType.SignificantTempChange,
-                i => i >= 6 &&
-                     data.Temperature[i].HasValue &&
-                     data.Temperature[i - 6].HasValue &&
-                     Math.Abs(data.Temperature[i]!.Value - data.Temperature[i - 6]!.Value) >= 8.0,
-                nowUtc,
-                75,
-                nextDayStartUtc,
-                nextDayEndUtc));
+            // Disabled intentionally: kept as historical logic, not used currently.
+            // alerts.AddRange(BuildAlertRanges(
+            //     data,
+            //     AlertType.SignificantTempChange,
+            //     i => i >= 6 &&
+            //          data.Temperature[i].HasValue &&
+            //          data.Temperature[i - 6].HasValue &&
+            //          Math.Abs(data.Temperature[i]!.Value - data.Temperature[i - 6]!.Value) >= 8.0,
+            //     nowUtc,
+            //     75,
+            //     nextDayStartUtc,
+            //     nextDayEndUtc));
 
             alerts.AddRange(BuildAlertRanges(
                 data,
@@ -255,7 +261,8 @@ WHERE c.ID IN ({string.Join(", ", paramNames)});";
                 data,
                 AlertType.FreezingRainOrBlackIce,
                 i => IsTrue(data.Temperature, i, t => t <= 0.0) &&
-                     IsTrue(data.Rain, i, r => r > 0.1),
+                     IsTrue(data.Rain, i, r => r > 0.1) &&
+                     IsTrue(data.DewPoint, i, d => d <= 0.0 && (data.Temperature[i]!.Value - d) <= 2.0),
                 nowUtc,
                 85,
                 nextDayStartUtc,
