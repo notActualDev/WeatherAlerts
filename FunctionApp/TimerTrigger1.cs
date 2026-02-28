@@ -24,7 +24,7 @@ public class CreateAlertsTimer
         _httpClient = httpClientFactory.CreateClient();
     }
 
-    [Function("CreateAlertsTimer3")]
+    [Function("CreateAlertsTimer")]
     public async Task Run(
         [TimerTrigger("0 0 3,15 * * *")] TimerInfo myTimer)
     {
@@ -45,5 +45,22 @@ public class CreateAlertsTimer
             new StringContent(json, Encoding.UTF8, "application/json"));
 
         _logger.LogInformation("Status: {status}", response.StatusCode);
+    }
+
+    [Function("AwakeEndpointTimer")]
+    public async Task RunAwakeEndpoint(
+        [TimerTrigger("0 */10 * * * *")] TimerInfo myTimer)
+    {
+        _logger.LogInformation("Awake timer started at {time}", DateTime.Now);
+
+        var endpoint = _config["AWAKE_ENDPOINT"];
+        if (string.IsNullOrWhiteSpace(endpoint))
+        {
+            _logger.LogWarning("AWAKE_ENDPOINT is not configured.");
+            return;
+        }
+
+        var response = await _httpClient.GetAsync(endpoint);
+        _logger.LogInformation("Awake endpoint status: {status}", response.StatusCode);
     }
 }
