@@ -1,6 +1,7 @@
 using System.Data;
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
+using System.Net;
 using System.Net.Sockets;
 
 public interface IAlertsService
@@ -18,6 +19,9 @@ public interface IAlertsService
 
 public sealed class AlertsService : IAlertsService
 {
+    private const int ForecastFetchMaxConcurrency = 5;
+    private const int WeatherApiMaxAttempts = 3;
+
     private static readonly TimeZoneInfo Warsaw = TimeZoneInfo.FindSystemTimeZoneById(
         OperatingSystem.IsWindows() ? "Central European Standard Time" : "Europe/Warsaw");
 
@@ -125,15 +129,7 @@ WHERE c.ID IN ({string.Join(", ", paramNames)});";
     public async Task<List<Weather3DayData>> Get3DayForecastsAsync(CancellationToken ct = default)
     {
         var cities = await GetSubscribedCitiesAsync(ct);
-        var forecasts = new List<Weather3DayData>(cities.Count);
-
-        foreach (var city in cities)
-        {
-            var forecast = await Fetch3DaysAsync(city, ct);
-            forecasts.Add(forecast);
-        }
-
-        return forecasts;
+        return await FetchForecastsWithConcurrencyLimitAsync(cities, ct);
     }
 
     public async Task<List<AlertRow>> CreateAlertsFromForecastsAsync(List<Weather3DayData> forecasts)
@@ -385,10 +381,10 @@ VALUES
             return 0;
         }
 
-        var forecasts = new List<Weather3DayData>(cities.Count);
-        foreach (var city in cities)
+        var forecasts = await FetchForecastsWithConcurrencyLimitAsync(cities, ct);
+        if (forecasts.Count == 0)
         {
-            forecasts.Add(await Fetch3DaysAsync(city, ct));
+            return 0;
         }
 
         var alerts = await CreateAlertsFromForecastsAsync(forecasts);
@@ -517,7 +513,7 @@ ORDER BY uc.CityID, a.ValidFrom, a.AlertTypeID;
     private async Task<Weather3DayData> Fetch3DaysAsync(CityToCheck city, CancellationToken ct)
     {
         var geoUrl = $"https://geocoding-api.open-meteo.com/v1/search?name={Uri.EscapeDataString(city.Name)}&count=5&format=json";
-        using var geoDoc = JsonDocument.Parse(await httpClient.GetStringAsync(geoUrl, ct));
+        using var geoDoc = JsonDocument.Parse(await SafeGetStringAsync(geoUrl, city, "geocoding", ct));
 
         if (!geoDoc.RootElement.TryGetProperty("results", out var geoResults) || geoResults.GetArrayLength() == 0)
         {
@@ -540,7 +536,7 @@ ORDER BY uc.CityID, a.ValidFrom, a.AlertTypeID;
             $"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}" +
             $"&start_date={yesterday}&end_date={tomorrow}&hourly={hourly}&timezone=Europe/Warsaw";
 
-        using var doc = JsonDocument.Parse(await httpClient.GetStringAsync(weatherUrl, ct));
+        using var doc = JsonDocument.Parse(await SafeGetStringAsync(weatherUrl, city, "forecast", ct));
         var hourlyNode = doc.RootElement.GetProperty("hourly");
 
         var localTimes = hourlyNode.GetProperty("time")
@@ -660,17 +656,145 @@ ORDER BY uc.CityID, a.ValidFrom, a.AlertTypeID;
         GenerateAndStoreAlertsAsync(CancellationToken ct)
     {
         var cities = await GetSubscribedCitiesAsync(ct);
-        var forecasts = new List<Weather3DayData>(cities.Count);
-
-        foreach (var city in cities)
+        var forecasts = await FetchForecastsWithConcurrencyLimitAsync(cities, ct);
+        if (forecasts.Count == 0)
         {
-            forecasts.Add(await Fetch3DaysAsync(city, ct));
+            return (cities, forecasts, new List<AlertRow>(), 0);
         }
 
         var alerts = await CreateAlertsFromForecastsAsync(forecasts);
         var inserted = await InsertAlertsAsync(alerts, ct);
 
         return (cities, forecasts, alerts, inserted);
+    }
+
+    private async Task<List<Weather3DayData>> FetchForecastsWithConcurrencyLimitAsync(
+        IReadOnlyList<CityToCheck> cities,
+        CancellationToken ct)
+    {
+        if (cities.Count == 0)
+        {
+            return new List<Weather3DayData>();
+        }
+
+        using var semaphore = new SemaphoreSlim(ForecastFetchMaxConcurrency);
+        var forecastsByIndex = new Weather3DayData?[cities.Count];
+
+        var tasks = cities.Select((city, index) => FetchSingleForecastAsync(city, index, forecastsByIndex, semaphore, ct));
+        await Task.WhenAll(tasks);
+
+        return forecastsByIndex
+            .Where(f => f is not null)
+            .Select(f => f!)
+            .ToList();
+    }
+
+    private async Task FetchSingleForecastAsync(
+        CityToCheck city,
+        int index,
+        Weather3DayData?[] forecastsByIndex,
+        SemaphoreSlim semaphore,
+        CancellationToken ct)
+    {
+        await semaphore.WaitAsync(ct);
+        try
+        {
+            forecastsByIndex[index] = await Fetch3DaysAsync(city, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                ex,
+                "Skipping city {CityId} ({CityName}, {Iso2}) after weather API failures.",
+                city.CityId,
+                city.Name,
+                city.Iso2);
+        }
+        finally
+        {
+            semaphore.Release();
+        }
+    }
+
+    private async Task<string> SafeGetStringAsync(
+        string url,
+        CityToCheck city,
+        string endpointName,
+        CancellationToken ct)
+    {
+        Exception? last = null;
+
+        for (var attempt = 1; attempt <= WeatherApiMaxAttempts; attempt++)
+        {
+            try
+            {
+                using var response = await httpClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
+                if (IsTransientStatusCode(response.StatusCode))
+                {
+                    throw new HttpRequestException(
+                        $"Transient weather API response: {(int)response.StatusCode} ({response.StatusCode})",
+                        null,
+                        response.StatusCode);
+                }
+
+                response.EnsureSuccessStatusCode();
+                return await response.Content.ReadAsStringAsync(ct);
+            }
+            catch (OperationCanceledException ex) when (!ct.IsCancellationRequested && attempt < WeatherApiMaxAttempts)
+            {
+                last = ex;
+                await Task.Delay(TimeSpan.FromSeconds(attempt * 2), ct);
+                logger.LogWarning(
+                    "Timeout while calling weather API ({Endpoint}) for city {CityId} ({CityName}), retry {Attempt}/{MaxAttempts}.",
+                    endpointName,
+                    city.CityId,
+                    city.Name,
+                    attempt + 1,
+                    WeatherApiMaxAttempts);
+            }
+            catch (HttpRequestException ex) when (attempt < WeatherApiMaxAttempts && IsTransientHttpRequestException(ex))
+            {
+                last = ex;
+                await Task.Delay(TimeSpan.FromSeconds(attempt * 2), ct);
+                logger.LogWarning(
+                    ex,
+                    "Transient weather API error ({Endpoint}) for city {CityId} ({CityName}), retry {Attempt}/{MaxAttempts}.",
+                    endpointName,
+                    city.CityId,
+                    city.Name,
+                    attempt + 1,
+                    WeatherApiMaxAttempts);
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"Weather API '{endpointName}' failed after {WeatherApiMaxAttempts} attempts for city {city.CityId} ({city.Name}).",
+            last);
+    }
+
+    private static bool IsTransientHttpRequestException(HttpRequestException ex)
+    {
+        if (ex.InnerException is SocketException)
+        {
+            return true;
+        }
+
+        return ex.StatusCode is HttpStatusCode.RequestTimeout
+            or HttpStatusCode.TooManyRequests
+            or HttpStatusCode.InternalServerError
+            or HttpStatusCode.BadGateway
+            or HttpStatusCode.ServiceUnavailable
+            or HttpStatusCode.GatewayTimeout;
+    }
+
+    private static bool IsTransientStatusCode(HttpStatusCode statusCode)
+    {
+        return statusCode is HttpStatusCode.RequestTimeout
+            or HttpStatusCode.TooManyRequests
+            or HttpStatusCode.InternalServerError
+            or HttpStatusCode.BadGateway
+            or HttpStatusCode.ServiceUnavailable
+            or HttpStatusCode.GatewayTimeout;
     }
 
     private async Task<(int UsersWithAlertsCount, int EmailsSentCount, int EmailsFailedCount)>

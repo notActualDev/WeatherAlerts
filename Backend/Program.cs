@@ -4,7 +4,11 @@ builder.Services.AddMemoryCache();
 builder.Services.AddScoped<IEmailService, AzureEmailService>();
 builder.Services.AddScoped<ISubscriptionRequestService, SubscriptionRequestService>();
 builder.Services.AddScoped<IUserService, UserService>();
-builder.Services.AddHttpClient<IAlertsService, AlertsService>();
+builder.Services.AddHttpClient<IAlertsService, AlertsService>()
+    .ConfigureHttpClient(c =>
+    {
+        c.Timeout = TimeSpan.FromSeconds(15);
+    });
 
 builder.Services.AddCors(options =>
 {
