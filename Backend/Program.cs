@@ -238,6 +238,13 @@ app.MapPost("/createAlertsAndSend", async (
     CancellationToken ct) =>
 {
     var debugEmail = configuration["DEBUG_EMAIL"];
+    var invocationId = Guid.NewGuid().ToString("N");
+    var startedAtUtc = DateTime.UtcNow;
+
+    logger.LogInformation(
+        "Scheduler hit /createAlertsAndSend. InvocationId: {InvocationId}, StartedAtUtc: {StartedAtUtc}",
+        invocationId,
+        startedAtUtc);
 
     async Task SendDebugMailAsync(string subject, string body)
     {
@@ -271,7 +278,7 @@ app.MapPost("/createAlertsAndSend", async (
         {
             await SendDebugMailAsync(
                 "DEBUG /createAlertsAndSend unauthorized",
-                $"Authorization failed.\nIncoming token: {providedToken}\nExpected token: {expectedToken}");
+                $"Authorization failed.\nInvocationId: {invocationId}\nIncoming token length: {providedToken.Length}");
 
             return Results.Unauthorized();
         }
@@ -287,10 +294,37 @@ app.MapPost("/createAlertsAndSend", async (
             summary.EmailsSentCount,
             summary.EmailsFailedCount);
 
+        if (summary.CitiesCount > 0 && summary.ForecastsCount == 0)
+        {
+            await SendDebugMailAsync(
+                "DEBUG /createAlertsAndSend zero forecasts",
+                $"InvocationId: {invocationId}\n" +
+                "Pipeline completed but no forecasts were fetched.\n" +
+                $"Cities: {summary.CitiesCount}\n" +
+                $"Forecasts: {summary.ForecastsCount}\n" +
+                $"Alerts generated: {summary.AlertsGeneratedCount}\n" +
+                $"Alerts inserted: {summary.AlertsInsertedCount}\n" +
+                $"Users with alerts: {summary.UsersWithAlertsCount}\n" +
+                $"Emails sent: {summary.EmailsSentCount}\n" +
+                $"Emails failed: {summary.EmailsFailedCount}");
+        }
+
+        if (summary.UsersWithAlertsCount > 0 && summary.EmailsSentCount == 0)
+        {
+            await SendDebugMailAsync(
+                "DEBUG /createAlertsAndSend zero sent with users waiting",
+                $"InvocationId: {invocationId}\n" +
+                "There were users with alerts, but no email was sent.\n" +
+                $"Users with alerts: {summary.UsersWithAlertsCount}\n" +
+                $"Emails sent: {summary.EmailsSentCount}\n" +
+                $"Emails failed: {summary.EmailsFailedCount}");
+        }
+
         if (summary.EmailsFailedCount > 0)
         {
             await SendDebugMailAsync(
                 "DEBUG /createAlertsAndSend partial failure",
+                $"InvocationId: {invocationId}\n" +
                 $"Pipeline completed with email send failures.\n" +
                 $"Cities: {summary.CitiesCount}\n" +
                 $"Forecasts: {summary.ForecastsCount}\n" +
@@ -308,7 +342,7 @@ app.MapPost("/createAlertsAndSend", async (
         logger.LogError(ex, "Create and send alerts pipeline failed");
         await SendDebugMailAsync(
             "DEBUG /createAlertsAndSend exception",
-            $"Exception: {ex.Message}\n\n{ex}");
+            $"InvocationId: {invocationId}\nException: {ex.Message}\n\n{ex}");
 
         return Results.Problem(
             title: "Create and send alerts failed",
